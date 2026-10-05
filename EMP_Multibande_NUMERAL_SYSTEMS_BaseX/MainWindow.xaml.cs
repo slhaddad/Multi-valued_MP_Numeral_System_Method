@@ -1,4 +1,8 @@
 ﻿// corrigé le 25/06/2020
+// Version V3 : élément structurant (ES) = disque euclidien de rayon i (dx² + dy² <= i²),
+//   utilisé directement en une seule passe pour l'érosion, la dilatation, l'ouverture et
+//   la fermeture (5, 13, 29, 49, 81 pixels pour i = 1..5, comme skimage.morphology.disk(i)).
+//   La reconstruction géodésique utilise le disque élémentaire B1 (rayon 1, 5 pixels).
 // =====================================================================================
 // EMP_Multibande_NUMERAL SYSTEMS_BaseX
 // Morphologie mathématique multivaluée (images multibandes) avec ordonnancement vectoriel
@@ -17,8 +21,8 @@
 //   érosion, dilatation, ouverture, fermeture, ouverture par reconstruction,
 //   fermeture par reconstruction (+ export multibande ENVI .hdr).
 //
-// ES : disque. Le disque de taille i est obtenu par i itérations de l'ES de base B1
-//      (disque de rayon 1 = 5 pixels), par associativité de la somme de Minkowski.
+// ES : disque euclidien de rayon i (dx² + dy² <= i²), utilisé en une seule passe (V3) :
+//      tous les pixels du disque sont comparés ensemble. Reconstruction : disque B1 (5 pixels).
 // =====================================================================================
 using Microsoft.Win32;
 using System;
@@ -353,7 +357,8 @@ namespace EMP_Multibande_NUMERAL_SYSTEMS_BaseX
 
         // ============================== ÉLÉMENT STRUCTURANT DISQUE ==============================
         // Décalages (dx, dy) des pixels couverts par un disque de rayon r centré sur (0,0).
-        // r=1 -> 5 pixels, r=2 -> 13 pixels, r=3 -> 29 pixels.
+        // r=1 -> 5 pixels, r=2 -> 13 pixels, r=3 -> 29 pixels, r=4 -> 49 pixels, r=5 -> 81 pixels
+        // (même ensemble de pixels que skimage.morphology.disk(r)).
         private List<SDPoint> GetDiskOffsets(int r)
         {
             var offs = new List<SDPoint>();
@@ -508,8 +513,9 @@ namespace EMP_Multibande_NUMERAL_SYSTEMS_BaseX
         }
 
         // ============================== OUVERTURE / FERMETURE STANDARD ==============================
-        // Ouverture = dilatation de l'érodé ; fermeture = érosion du dilaté (même ES de taille 'rayon'),
-        // obtenues par 'rayon' itérations de l'ES de base B1.
+        // Ouverture = dilatation de l'érodé ; fermeture = érosion du dilaté (V3) : même ES
+        //   (disque euclidien de rayon 'rayon'), appliqué en une seule passe à chaque opération.
+        //   Pixel de bord (disque débordant de l'image) : valeur de l'image d'entrée conservée.
         private void OuvertureFermetureStandard(List<int[,]> imagesErodeInit, List<int[,]> imagesDilateInit, ref List<int[,]> imagesOuvertesStandards, ref List<int[,]> imagesFermeesStandards, int rayon)
         {
             List<int[,]> imagesErodPrec = new List<int[,]>();
@@ -522,44 +528,40 @@ namespace EMP_Multibande_NUMERAL_SYSTEMS_BaseX
                 imagesErodPrec.Add((int[,])imagesDilateInit[k].Clone());
                 imagesDilatePrec.Add((int[,])imagesErodeInit[k].Clone());
             }
-            var offsB1 = GetDiskOffsets(1);
+            // V3 : ES = disque euclidien de rayon 'rayon' (pixels tels que dx² + dy² <= rayon²),
+            // utilisé directement en une seule passe : tous les pixels du disque sont comparés ensemble.
+            var offsBi = GetDiskOffsets(rayon);
             int W = imagesErodeInit[0].GetLength(0), H = imagesErodeInit[0].GetLength(1);
-            for (int elemStruct = 0; elemStruct < rayon; elemStruct++)
-            {
-                for (int x = 0; x < W; x++)
-                    for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                for (int y = 0; y < H; y++)
+                {
+                    if (IsBorder(x, y, W, H, offsBi))
                     {
-                        if (IsBorder(x, y, W, H, offsB1))
+                        // Pixel de bord (le disque de rayon 'rayon' déborde de l'image) : valeur d'entrée conservée
+                        for (int k = 0; k < imagesErodeInit.Count; k++)
                         {
-                            // Pixel de bord : valeur précédente conservée
-                            for (int k = 0; k < imagesErodeInit.Count; k++)
-                            {
-                                imagesOuvertesStandards[k][x, y] = imagesDilatePrec[k][x, y];
-                                imagesFermeesStandards[k][x, y] = imagesErodPrec[k][x, y];
-                            }
-                        }
-                        else
-                        {
-                            int sMax = 0, tMax = 0, sMin = 0, tMin = 0;
-                            MinMaxVecteurs(imagesErodPrec, imagesDilatePrec, x, y, ref sMin, ref tMin, ref sMax, ref tMax, 1);
-                            for (int k = 0; k < imagesErodeInit.Count; k++)
-                            {
-                                imagesFermeesStandards[k][x, y] = imagesErodPrec[k][sMin, tMin];
-                                imagesOuvertesStandards[k][x, y] = imagesDilatePrec[k][sMax, tMax];
-                            }
+                            imagesOuvertesStandards[k][x, y] = imagesDilatePrec[k][x, y];
+                            imagesFermeesStandards[k][x, y] = imagesErodPrec[k][x, y];
                         }
                     }
-                for (int k = 0; k < imagesErodeInit.Count; k++)
-                {
-                    imagesErodPrec[k] = (int[,])imagesFermeesStandards[k].Clone();
-                    imagesDilatePrec[k] = (int[,])imagesOuvertesStandards[k].Clone();
+                    else
+                    {
+                        int sMax = 0, tMax = 0, sMin = 0, tMin = 0;
+                        MinMaxVecteurs(imagesErodPrec, imagesDilatePrec, x, y, ref sMin, ref tMin, ref sMax, ref tMax, rayon);
+                        for (int k = 0; k < imagesErodeInit.Count; k++)
+                        {
+                            imagesFermeesStandards[k][x, y] = imagesErodPrec[k][sMin, tMin];
+                            imagesOuvertesStandards[k][x, y] = imagesDilatePrec[k][sMax, tMax];
+                        }
+                    }
                 }
-            }
         }
 
         // ============================== ÉROSION / DILATATION ==============================
-        // Érosion (Num minimal) et dilatation (Num maximal) multivaluées de taille 'rayon', obtenues
-        // par 'rayon' itérations de l'ES de base B1 (ε_Bλ = ε_B1^λ, δ_Bλ = δ_B1^λ).
+        // Érosion (Num minimal) et dilatation (Num maximal) multivaluées de taille 'rayon' (V3) :
+        //   ES = disque euclidien de rayon 'rayon' ; pour chaque pixel, l'infimum et le supremum sont
+        //   cherchés en UNE SEULE PASSE parmi TOUS les pixels-vecteurs couverts par ce disque.
+        //   Pixel de bord (disque débordant de l'image) : valeur de l'image d'entrée conservée.
         private void ErosionDilatationInit(List<int[,]> imagesMat, ref List<int[,]> imagesErodeInit, ref List<int[,]> imagesDilateInit, int rayon)
         {
             List<int[,]> imagesErodPrec = new List<int[,]>();
@@ -571,39 +573,33 @@ namespace EMP_Multibande_NUMERAL_SYSTEMS_BaseX
                 imagesErodPrec.Add((int[,])imagesMat[k].Clone());
                 imagesDilatePrec.Add((int[,])imagesMat[k].Clone());
             }
-            var offsB1 = GetDiskOffsets(1);
+            // V3 : ES = disque euclidien de rayon 'rayon' (pixels tels que dx² + dy² <= rayon²),
+            // utilisé directement en une seule passe : tous les pixels du disque sont comparés ensemble.
+            var offsBi = GetDiskOffsets(rayon);
             int W = imagesMat[0].GetLength(0), H = imagesMat[0].GetLength(1);
-            for (int elemStruct = 0; elemStruct < rayon; elemStruct++)
-            {
-                for (int x = 0; x < W; x++)
-                    for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                for (int y = 0; y < H; y++)
+                {
+                    if (IsBorder(x, y, W, H, offsBi))
                     {
-                        if (IsBorder(x, y, W, H, offsB1))
+                        // Pixel de bord (le disque de rayon 'rayon' déborde de l'image) : valeur d'entrée conservée
+                        for (int k = 0; k < imagesMat.Count; k++)
                         {
-                            // Pixel de bord : valeur précédente conservée
-                            for (int k = 0; k < imagesMat.Count; k++)
-                            {
-                                imagesDilateInit[k][x, y] = imagesDilatePrec[k][x, y];
-                                imagesErodeInit[k][x, y] = imagesErodPrec[k][x, y];
-                            }
-                        }
-                        else
-                        {
-                            int sMax = 0, tMax = 0, sMin = 0, tMin = 0;
-                            MinMaxVecteurs(imagesErodPrec, imagesDilatePrec, x, y, ref sMin, ref tMin, ref sMax, ref tMax, 1);
-                            for (int k = 0; k < imagesMat.Count; k++)
-                            {
-                                imagesErodeInit[k][x, y] = imagesErodPrec[k][sMin, tMin];
-                                imagesDilateInit[k][x, y] = imagesDilatePrec[k][sMax, tMax];
-                            }
+                            imagesDilateInit[k][x, y] = imagesDilatePrec[k][x, y];
+                            imagesErodeInit[k][x, y] = imagesErodPrec[k][x, y];
                         }
                     }
-                for (int k = 0; k < imagesMat.Count; k++)
-                {
-                    imagesErodPrec[k] = (int[,])imagesErodeInit[k].Clone();
-                    imagesDilatePrec[k] = (int[,])imagesDilateInit[k].Clone();
+                    else
+                    {
+                        int sMax = 0, tMax = 0, sMin = 0, tMin = 0;
+                        MinMaxVecteurs(imagesErodPrec, imagesDilatePrec, x, y, ref sMin, ref tMin, ref sMax, ref tMax, rayon);
+                        for (int k = 0; k < imagesMat.Count; k++)
+                        {
+                            imagesErodeInit[k][x, y] = imagesErodPrec[k][sMin, tMin];
+                            imagesDilateInit[k][x, y] = imagesDilatePrec[k][sMax, tMax];
+                        }
+                    }
                 }
-            }
         }
 
         // ============================== CONVERSION BITMAP -> MATRICES ==============================
